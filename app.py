@@ -1,5 +1,4 @@
 ﻿import os
-import re
 import requests
 import streamlit as st
 from dotenv import load_dotenv
@@ -16,18 +15,41 @@ SERPAPI_URL = "https://serpapi.com/search.json"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 
+def build_query(error, technology, language, environment="", context=""):
+    parts = [f'"{error.strip()}"', technology, language]
+    if environment.strip():
+        parts.append(environment.strip())
+    parts.append("troubleshooting")
+    return " ".join(part for part in parts if part)
+
+
+def has_serpapi_key(api_key):
+    return bool(api_key and api_key.strip())
+
+
+def parse_search_results(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("Search provider returned an unexpected response.")
+    if payload.get("error"):
+        raise RuntimeError("SerpApi could not complete the search. Check the key, quota, and request.")
+    organic = payload.get("organic_results", [])
+    results = []
+    if not isinstance(organic, list):
+        return results
+    for item in organic:
+        if not isinstance(item, dict):
+            continue
+        link = item.get("link")
+        if not isinstance(link, str) or not link.startswith(("https://", "http://")):
+            continue
+        results.append({"title": str(item.get("title") or "Untitled result"), "link": link,
+                        "snippet": str(item.get("snippet") or "No preview available.")})
+    return results
+
+
 def search_web(error, technology, language, environment, context, api_key):
     """Search Google through SerpApi and return organic results."""
-    query_parts = [
-        f'"{error}"',
-        technology,
-        language,
-        "fix troubleshooting",
-    ]
-    if environment.strip():
-        query_parts.append(environment.strip())
-
-    query = " ".join(part for part in query_parts if part)
+    query = build_query(error, technology, language, environment, context)
 
     response = requests.get(
         SERPAPI_URL,
@@ -37,23 +59,12 @@ def search_web(error, technology, language, environment, context, api_key):
             "api_key": api_key,
             "num": 8,
         },
-        timeout=30,
+        timeout=20,
     )
     response.raise_for_status()
     payload = response.json()
 
-    if payload.get("error"):
-        raise RuntimeError(payload["error"])
-
-    results = []
-    for item in payload.get("organic_results", []):
-        results.append({
-            "title": item.get("title", "Untitled result"),
-            "link": item.get("link", ""),
-            "snippet": item.get("snippet", "No preview available."),
-        })
-
-    return query, results
+    return query, parse_search_results(payload)
 
 
 def fallback_analysis(error, technology, results):
@@ -61,7 +72,7 @@ def fallback_analysis(error, technology, results):
     text = error.lower()
     suggestions = []
 
-    if "modulenotfounderror" in text or "no module named" in text:
+    if "modulenotfounderror" in text or "no module named" in text or "importerror" in text:
         suggestions = [
             "Check the exact package/module name in the error.",
             "Install the required package in the same Python environment used to run the program.",
@@ -109,6 +120,16 @@ def fallback_analysis(error, technology, results):
             "Check delimiters, brackets, quotes, indentation, and language-specific syntax.",
             "Compare the failing line with a minimal working example.",
         ]
+    elif "cannot find symbol" in text or "javac" in text or "exception in thread" in text:
+        suggestions = ["Check the first compiler/runtime diagnostic and its file and line.", "Confirm the class name, imports, package, and classpath.", "For runtime exceptions, inspect the first application frame in the stack trace."]
+    elif "referenceerror" in text or "typeerror" in text or "cannot find module" in text or "npm err" in text:
+        suggestions = ["Check the exact symbol, property, or module named in the message.", "Confirm dependencies are installed in this project and inspect package.json and its lockfile.", "Check the Node.js version and whether the code expects CommonJS or ES modules."]
+    elif "database" in text or "connection refused" in text or "could not connect" in text or "sqlstate" in text:
+        suggestions = ["Confirm the database service is running and reachable from this machine.", "Check host, port, database name, TLS settings, and firewall rules.", "Verify credentials through a secret-safe configuration check; do not print them."]
+    elif "environment variable" in text or "not set" in text or "undefined variable" in text or "keyerror" in text:
+        suggestions = ["Check the exact variable name and whether the process receives it.", "Load local environment configuration before reading values.", "Fail with a clear message when required configuration is absent; keep secrets out of logs."]
+    elif "version conflict" in text or "incompatible" in text or "dependency conflict" in text or "requires:" in text:
+        suggestions = ["Read the package manager's required and installed versions in the full output.", "Inspect the lockfile and runtime version, then update compatible dependencies deliberately.", "Recreate an isolated environment and install from the lockfile to check reproducibility."]
     else:
         suggestions = [
             "Read the complete traceback and identify the first relevant application-code line.",
@@ -181,7 +202,7 @@ Search evidence:
             "Content-Type": "application/json",
         },
         json={
-            "model": "llama-3.3-70b-versatile",
+            "model": os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
             "messages": [
                 {
                     "role": "system",
@@ -191,12 +212,35 @@ Search evidence:
             ],
             "temperature": 0.2,
         },
-        timeout=60,
+        timeout=40,
     )
     response.raise_for_status()
     payload = response.json()
     content = payload["choices"][0]["message"]["content"]
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("Groq returned an empty analysis.")
     return None, content
+
+
+def make_report(error, technology, language, environment, context, query, results, analysis, is_ai=False):
+    """Build a complete report from this investigation's actual findings."""
+    if isinstance(analysis, dict):
+        lines = [analysis["summary"], "Possible causes:"]
+        lines.extend(f"- {cause}" for cause in analysis["causes"])
+        lines.append("Recommended actions:")
+        lines.extend(f"- {fix}" for fix in analysis["fixes"])
+        lines.append("Verification:")
+        lines.extend(f"- [ ] {step}" for step in analysis["verification"])
+        findings = "\n".join(lines)
+    else:
+        findings = str(analysis)
+    sources = "\n\n".join(f"{i}. {item['title']}\n{item['link']}\n{item['snippet']}" for i, item in enumerate(results, 1)) or "No organic sources were returned."
+    return ("FieldDebug investigation report\n"
+            f"Analysis type: {'Groq AI (verify against sources)' if is_ai else 'Rule-based hypotheses'}\n\n"
+            f"Original error:\n{error}\n\nTechnology: {technology}\nLanguage: {language}\n"
+            f"Environment: {environment or 'Not specified'}\nContext: {context or 'Not supplied'}\n\n"
+            f"Search query:\n{query}\n\nFindings and suggested actions:\n{findings}\n\nSources:\n{sources}\n\n"
+            "Disclaimer: Suggested fixes are hypotheses and must be verified in your environment.")
 
 
 def render_fallback(report):
@@ -290,7 +334,7 @@ def main():
         if not error.strip():
             st.warning("Please paste the error message first.")
             return
-        if not serp_key.strip():
+        if not has_serpapi_key(serp_key):
             st.error("Add your SerpApi key in the sidebar to run a live search.")
             st.info("You can get a key from https://serpapi.com/")
             return
@@ -321,15 +365,14 @@ def main():
                 )
 
             with st.spinner("Preparing troubleshooting guidance..."):
-                fallback, ai_text = ai_analysis(
-                    error.strip(),
-                    technology,
-                    language,
-                    environment,
-                    context,
-                    results,
-                    groq_key.strip(),
-                )
+                try:
+                    fallback, ai_text = ai_analysis(
+                        error.strip(), technology, language, environment, context,
+                        results, groq_key.strip(),
+                    )
+                except (requests.RequestException, KeyError, ValueError):
+                    fallback, ai_text = fallback_analysis(error.strip(), technology, results), None
+                    st.warning("Groq analysis was unavailable. Showing rule-based hypotheses instead.")
 
             st.divider()
             st.header("Investigation report")
@@ -351,34 +394,26 @@ def main():
             else:
                 st.write("No sources to display.")
 
+            report_content = make_report(
+                error.strip(), technology, language, environment, context, query,
+                results, ai_text or fallback, is_ai=bool(ai_text),
+            )
             st.download_button(
                 "Download investigation report",
-                data=(
-                    f"FieldDebug investigation\n\n"
-                    f"Error: {error.strip()}\n"
-                    f"Search query: {query}\n\n"
-                    + "\n\n".join(
-                        f"{i}. {r['title']}\n{r['link']}\n{r['snippet']}"
-                        for i, r in enumerate(results, start=1)
-                    )
-                ),
+                data=report_content,
                 file_name="fielddebug_report.txt",
                 mime="text/plain",
             )
 
         except requests.HTTPError as exc:
-            st.error(
-                f"An API request returned an HTTP error: {exc}. "
-                "Check your API key, quota, and account status."
-            )
-            if exc.response is not None:
-                st.code(exc.response.text[:1500])
-        except requests.RequestException as exc:
-            st.error(f"Network request failed: {exc}")
-        except (KeyError, ValueError, RuntimeError) as exc:
-            st.error(f"Could not process the response: {exc}")
-        except Exception as exc:
-            st.error(f"Unexpected error: {exc}")
+            code = exc.response.status_code if exc.response is not None else "unknown"
+            st.error(f"Search request failed with HTTP {code}. Check the SerpApi key, quota, and account status.")
+        except requests.RequestException:
+            st.error("Network request failed. Check connectivity and try again.")
+        except (KeyError, ValueError, RuntimeError):
+            st.error("The search response could not be processed. Check the API key and try again.")
+        except Exception:
+            st.error("An unexpected error occurred. Check configuration and try again.")
 
     else:
         st.divider()
