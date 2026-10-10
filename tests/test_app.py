@@ -69,3 +69,67 @@ def test_missing_serpapi_configuration_is_reported():
     assert not app.has_serpapi_key("")
     assert not app.has_serpapi_key("  ")
     assert app.has_serpapi_key("configured")
+
+
+def test_successful_verification_requires_success_evidence_or_user_confirmation():
+    status, reason = app.classify_verification("12 passed in 0.42s")
+    assert status == "Resolved"
+    assert "did not execute" in reason
+
+    status, reason = app.classify_verification("", user_reports_success=True)
+    assert status == "Resolved"
+    assert "You reported" in reason
+
+
+def test_continuing_failure_is_not_resolved_when_text_changes():
+    status, reason = app.classify_verification("ValueError: still cannot parse input")
+    assert status == "Still failing"
+    assert "not been verified as resolved" in reason
+    assert app.classify_verification("BUILD FAILED in 2s")[0] == "Still failing"
+    assert app.classify_verification("Tests run: 4, Failures: 1, Errors: 0")[0] == "Still failing"
+
+
+def test_ambiguous_and_empty_verification_need_review():
+    assert app.classify_verification("Command completed") [0] == "Needs review"
+    assert app.classify_verification("  ") [0] == "Needs review"
+
+
+def test_verification_history_can_be_created_and_cleared():
+    state = {}
+    investigation = {"error": "ImportError"}
+    initial = app.add_investigation_history(state, investigation, timestamp="2026-10-10T12:29+05:30")
+    assert initial["status"] == "Not verified"
+    assert initial["selected_fix"] == "No fix selected"
+    entry = app.add_verification_history(
+        state, "ImportError", "Install package in active venv", "2 passed", "Resolved",
+        "Successful tests reported", timestamp="2026-10-10T12:30+05:30",
+    )
+    assert state["fielddebug_history"] == [initial, entry]
+    assert entry["timestamp"] == "2026-10-10T12:30+05:30"
+    app.clear_verification_history(state)
+    assert state["fielddebug_history"] == []
+
+    widget_state = {"verification_output": "old", "verification_new_error": "next", "other": "preserved"}
+    app.clear_verification_widget_state(widget_state)
+    assert widget_state == {"other": "preserved"}
+
+def test_new_error_reuses_existing_environment_for_search():
+    current = {
+        "technology": "Python", "language": "Python", "environment": "Windows 11",
+        "context": "running tests",
+    }
+    request = app.next_investigation_payload(current, "  AssertionError: expected 1  ")
+    assert request == {
+        "error": "AssertionError: expected 1", "technology": "Python",
+        "language": "Python", "environment": "Windows 11", "context": "running tests",
+    }
+    with pytest.raises(ValueError, match="new error"):
+        app.next_investigation_payload(current, " ")
+
+
+def test_fix_options_come_from_displayed_analysis():
+    options = app.suggested_fix_options(
+        "## Suggested fixes\n1. Run `python -m pip install pandas`\n2. Check the active interpreter\n## How to verify\nRun tests.",
+        app.fallback_analysis("other", "Python", []),
+    )
+    assert options == ["Run `python -m pip install pandas`", "Check the active interpreter"]

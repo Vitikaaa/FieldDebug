@@ -1,6 +1,6 @@
 # FieldDebug
 
-**Know what might be broken. Find evidence. Test the fix.**
+**Let’s trace the failure.**
 
 FieldDebug helps developers investigate an error by searching Google through SerpApi, displaying source links and snippets, and presenting cautious troubleshooting guidance. Search is central to the workflow: the user can inspect current evidence before testing a suggested fix.
 
@@ -11,6 +11,7 @@ FieldDebug helps developers investigate an error by searching Google through Ser
 - Optional Groq analysis grounded in retrieved snippets; rule-based fallback when absent or unavailable
 - Specific fallback checks for common Python, Java, JavaScript/Node, HTTP, network, database, configuration, and dependency errors
 - Downloadable report containing the actual investigation and evidence
+- **Fix Verification Lab:** choose a suggested fix, paste the result from your own run, compare before and after, and keep a session-only verification history
 
 ## Architecture and data flow
 
@@ -45,6 +46,8 @@ Tests mock outbound search requests and do not consume API quota.
 ## Example
 
 Enter `ModuleNotFoundError: No module named 'pandas'`, choose Python, and specify the active OS/runtime. FieldDebug searches that error with the selected context, shows matching web evidence, then suggests checks such as installing into the same interpreter environment and verifying with `python -m pip show pandas`.
+
+After reviewing the suggestions, use Fix Verification Lab to select one, apply it yourself, and paste the output or explicitly confirm the issue is resolved. FieldDebug classifies the supplied evidence as resolved, still failing, or needing review; it never executes user code and does not claim to have independently run a fix. Verification attempts remain in Streamlit session state and are cleared when the session ends or the user clears history.
 
 ## Limitations, security, and privacy
 

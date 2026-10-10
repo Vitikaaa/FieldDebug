@@ -1,5 +1,7 @@
 ﻿import os
 import html
+import re
+from datetime import datetime
 from urllib.parse import urlparse
 import requests
 import streamlit as st
@@ -245,30 +247,575 @@ def make_report(error, technology, language, environment, context, query, result
             "Disclaimer: Suggested fixes are hypotheses and must be verified in your environment.")
 
 
+def classify_verification(output, user_reports_success=False):
+    """Classify user-provided evidence without executing or inferring a code fix."""
+    text = (output or "").strip()
+    if user_reports_success:
+        return "Resolved", "You reported that the issue is resolved. FieldDebug did not independently run the fix."
+    if not text:
+        return "Needs review", "Add the resulting output or explicitly confirm that the issue is resolved."
+    failure_markers = (
+        r"traceback \(most recent call last\)", r"\b[A-Za-z_]*(?:Error|Exception):",
+        r"\bException in thread\b",
+        r"(?im)^\s*(?:error|exception|failed|failure)\b", r"\btests?\s+(?:have\s+)?failed\b",
+        r"\b\d+\s+failed\b", r"\bBUILD FAILED\b", r"\bnpm ERR!", r"assertionerror",
+        r"\b(?:Failures|Errors):\s*[1-9]\d*\b",
+        r"\bexit code [1-9]\d*\b",
+    )
+    if any(re.search(pattern, text) for pattern in failure_markers):
+        return "Still failing", "The submitted output contains an error, exception, or failure marker. The new issue has not been verified as resolved."
+    success_markers = (
+        r"\b\d+\s+passed\b", r"\ball tests passed\b", r"\btests? passed\b",
+        r"\bRan\s+\d+\s+tests?\b[\s\S]{0,100}\bOK\b",
+    )
+    if any(re.search(pattern, text, re.IGNORECASE) for pattern in success_markers):
+        return "Resolved", "The output contains a recognizable successful test, build, or compilation result. FieldDebug did not execute it."
+    return "Needs review", "The output does not clearly show success or a continuing failure. Review it and run a relevant test."
+
+
+def add_verification_history(state, original_error, selected_fix, output, status, reason, timestamp=None):
+    """Append one verification attempt to the current Streamlit session history."""
+    entry = {
+        "original_error": original_error,
+        "selected_fix": selected_fix,
+        "output": output,
+        "status": status,
+        "reason": reason,
+        "timestamp": timestamp or datetime.now().astimezone().isoformat(timespec="minutes"),
+    }
+    state.setdefault("fielddebug_history", []).append(entry)
+    return entry
+
+
+def add_investigation_history(state, investigation, timestamp=None):
+    """Record a completed search in session history before any fix is selected."""
+    entry = {
+        "original_error": investigation["error"],
+        "selected_fix": "No fix selected",
+        "output": "",
+        "status": "Not verified",
+        "reason": "Investigation completed. Choose a suggested fix and submit outcome evidence to verify it.",
+        "timestamp": timestamp or datetime.now().astimezone().isoformat(timespec="minutes"),
+    }
+    state.setdefault("fielddebug_history", []).append(entry)
+    return entry
+
+
+def clear_verification_history(state):
+    state["fielddebug_history"] = []
+
+
+def clear_verification_widget_state(state):
+    for key in ("verification_selected_fix", "verification_output", "verification_user_success", "verification_new_error"):
+        state.pop(key, None)
+
+
+def next_investigation_payload(current, new_error):
+    """Reuse the active investigation context for a user-supplied follow-up error."""
+    new_error = (new_error or "").strip()
+    if not new_error:
+        raise ValueError("Enter the new error or failure output before investigating it.")
+    return {
+        "error": new_error,
+        "technology": current["technology"],
+        "language": current["language"],
+        "environment": current["environment"],
+        "context": current["context"],
+    }
+
+
+def suggested_fix_options(analysis, fallback):
+    """Extract selectable fix choices from the analysis actually shown to the user."""
+    if isinstance(analysis, dict):
+        options = analysis.get("fixes", [])
+    else:
+        match = re.search(r"(?im)^#{1,4}\s*(?:suggested fixes|recommended fixes)\s*$([\s\S]*?)(?=^#{1,4}\s|\Z)", analysis or "")
+        section = match.group(1) if match else ""
+        options = [re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line).strip()
+                   for line in section.splitlines()
+                   if re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line).strip()]
+    return list(dict.fromkeys(str(option).strip() for option in options if str(option).strip())) or list(fallback.get("fixes", []))
+
+
 def inject_styles():
     st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&display=swap');
-    :root{--bg:#0b0d12;--panel:#11141b;--line:#252a36;--text:#edf0f6;--muted:#9299aa;--blue:#7892ff}
-    html,body,[class*="css"]{font-family:'DM Sans',sans-serif}.stApp{background:radial-gradient(ellipse at 50% -25%,#19223a 0%,#0b0d12 44%);color:var(--text)}
-    [data-testid="stHeader"]{background:transparent}.block-container{max-width:1080px;padding:1.2rem 2rem 4rem}
-    [data-testid="stSidebar"]{background:#0d1016;border-right:1px solid var(--line)}[data-testid="stSidebar"]>div:first-child{padding-top:1.5rem}
-    h1,h2,h3,p{color:var(--text)}h1{letter-spacing:-.055em}h2{letter-spacing:-.035em}label,[data-testid="stCaptionContainer"]{color:var(--muted)!important}
-    [data-testid="stTextArea"] textarea,[data-testid="stTextInput"] input,[data-testid="stSelectbox"] [data-baseweb="select"]>div{background:#0c0f15!important;border:1px solid #2a3040!important;border-radius:9px!important;color:#edf0f6!important}
-    [data-testid="stTextArea"] textarea:focus,[data-testid="stTextInput"] input:focus{border-color:#718dff!important;box-shadow:0 0 0 1px #718dff55!important}
-    [data-testid="stForm"]{border:0;padding:0}.stButton>button,[data-testid="stFormSubmitButton"] button{min-height:42px;border-radius:9px;border:1px solid #7894ff;background:#6b88f5;color:#08101f;font-weight:700;transition:filter .15s,transform .15s}
-    .stButton>button:hover,[data-testid="stFormSubmitButton"] button:hover{filter:brightness(1.08);transform:translateY(-1px)}a{color:#9ab0ff!important}
-    [data-testid="stVerticalBlockBorderWrapper"]{background:#11141b;border-color:#282e3a!important;border-radius:12px!important}code,pre{font-family:'DM Mono',monospace!important}
-    .fd-nav{display:flex;align-items:center;gap:12px;min-height:48px;border-bottom:1px solid #282e3a;margin-bottom:3.8rem;padding-bottom:12px}
-    .fd-mark{width:28px;height:28px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;background:#6f8cff;color:#080d18;font:700 12px 'DM Mono',monospace}
-    .fd-brand{font-size:15px;font-weight:700;letter-spacing:-.03em}.fd-navitem{color:#a2a9b8;font-size:12px;padding:7px 10px;border-radius:7px;text-decoration:none!important}.fd-navitem.active{color:#edf0f6!important;background:#1a1f2a}
-    .fd-status{margin-left:auto;color:#9ca5b7;font-size:11px;display:flex;align-items:center;gap:7px}.fd-dot{width:7px;height:7px;border-radius:50%;background:#555c6c;display:inline-block}.fd-dot.ready{background:#53d6a0;box-shadow:0 0 10px #53d6a055}
-    .fd-eyebrow,.fd-section-label{color:#8da4ff;font:500 10px 'DM Mono',monospace;letter-spacing:.13em;margin-bottom:12px}.fd-title{font-size:clamp(36px,5vw,54px);font-weight:600;line-height:1.04;letter-spacing:-.065em;margin:0 0 12px}
-    .fd-subtitle{max-width:610px;color:#a1a8b7;font-size:15px;line-height:1.65;margin-bottom:34px}.fd-lead,.fd-snippet{color:#b2b8c5;font-size:13px;line-height:1.65}.fd-card-title{color:#e9edf5;font-size:14px;font-weight:600;margin:0 0 7px}.fd-step{color:#7893ff;font:500 11px 'DM Mono',monospace;margin-bottom:14px}
-    .fd-summary{padding:18px 20px;border:1px solid #293247;border-radius:12px;background:linear-gradient(120deg,#141a27,#11141b)}.fd-source-title{font-size:14px;font-weight:600;line-height:1.4}.fd-domain{font:11px 'DM Mono',monospace;color:#8e98ad;margin:5px 0 9px}
-    @media(max-width:700px){.block-container{padding:1rem 1rem 3rem}.fd-nav{margin-bottom:2.5rem}.fd-navitem{display:none}.fd-status{font-size:10px}.fd-subtitle{margin-bottom:25px}}
+
+    :root {
+        --bg: #F5F1E8;
+        --panel: #FFFCF5;
+        --line: #DED6C8;
+        --text: #202723;
+        --muted: #686D65;
+        --accent: #C65D36;
+    }
+
+    html, body, [class*="css"] {
+        font-family: 'DM Sans', sans-serif;
+    }
+
+    .stApp {
+        background: var(--bg);
+        color: var(--text);
+    }
+
+    [data-testid="stHeader"] {
+        background: transparent;
+    }
+
+    .block-container {
+        max-width: 1160px;
+        padding: 1.5rem 2rem 3rem;
+    }
+
+    /* Sidebar */
+    [data-testid="stSidebar"],
+    [data-testid="stSidebar"] [data-testid="stSidebarContent"] {
+        background: #EAE3D5 !important;
+    }
+
+    [data-testid="stSidebar"] {
+        border-right: 1px solid #D8CEBD !important;
+    }
+
+    [data-testid="stSidebar"] > div:first-child {
+        padding-top: 1.5rem;
+    }
+
+    [data-testid="stSidebar"] .block-container {
+        padding: 1.5rem 1.1rem 2rem;
+    }
+
+    [data-testid="stSidebar"] h1,
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3 {
+        color: #242923 !important;
+        letter-spacing: -0.025em;
+    }
+
+    [data-testid="stSidebar"] p,
+    [data-testid="stSidebar"] label,
+    [data-testid="stSidebar"] span {
+        color: #55594F;
+        line-height: 1.65;
+    }
+
+    /* Typography */
+    h1, h2, h3, p {
+        color: var(--text);
+    }
+
+    h1 {
+        letter-spacing: -0.045em;
+        font-weight: 700;
+    }
+
+    h2 {
+        letter-spacing: -0.03em;
+    }
+
+    label,
+    [data-testid="stCaptionContainer"] {
+        color: var(--muted) !important;
+    }
+
+    /* Inputs */
+    [data-testid="stTextArea"] textarea,
+    [data-testid="stTextInput"] input,
+    [data-testid="stSelectbox"] [data-baseweb="select"] > div,
+    [data-testid="stMultiSelect"] [data-baseweb="select"] > div {
+        background: #FFFCF5 !important;
+        border: 1px solid #CFC5B5 !important;
+        border-radius: 8px !important;
+        color: #202723 !important;
+        -webkit-text-fill-color: #202723 !important;
+        transition: border-color 200ms ease, box-shadow 200ms ease;
+    }
+
+    [data-testid="stTextArea"] textarea::placeholder,
+    [data-testid="stTextInput"] input::placeholder {
+        color: #77786F !important;
+        -webkit-text-fill-color: #77786F !important;
+        opacity: 1 !important;
+    }
+
+    [data-testid="stTextArea"] textarea:focus,
+    [data-testid="stTextInput"] input:focus {
+        border-color: var(--accent) !important;
+        box-shadow: 0 0 0 3px rgba(198, 93, 54, 0.12) !important;
+        outline: none !important;
+    }
+
+    /* Form */
+    [data-testid="stForm"] {
+        border: 0;
+        padding: 0;
+    }
+
+    /* Buttons */
+    .stButton > button,
+    [data-testid="stFormSubmitButton"] button {
+        position: relative;
+        overflow: hidden;
+        min-height: 44px;
+        border-radius: 8px;
+        border: 1px solid var(--accent);
+        background: var(--accent);
+        color: #FFFFFF !important;
+        font-weight: 700;
+        box-shadow: 0 2px 5px rgba(75, 49, 30, 0.08);
+        transition: transform 220ms ease, box-shadow 220ms ease,
+                    background 220ms ease, border-color 220ms ease;
+    }
+
+    .stButton > button:hover,
+    [data-testid="stFormSubmitButton"] button:hover {
+        background: linear-gradient(110deg, #D76A43 0%, #C65D36 55%, #B9502D 100%) !important;
+        border-color: #E7A080 !important;
+        color: #FFFFFF !important;
+        transform: translateY(-2px);
+        box-shadow: 0 5px 14px rgba(103, 59, 37, 0.16),
+                    0 0 12px rgba(198, 93, 54, 0.12),
+                    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+        filter: none;
+    }
+
+    .stButton > button:active,
+    [data-testid="stFormSubmitButton"] button:active {
+        transform: translateY(0);
+        box-shadow: 0 1px 3px rgba(75, 49, 30, 0.1);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .stButton > button,
+        [data-testid="stFormSubmitButton"] button,
+        [data-testid="stTextArea"] textarea,
+        [data-testid="stTextInput"] input {
+            transition: none !important;
+        }
+    }
+
+    a {
+        color: #9C4529 !important;
+    }
+
+    code, pre {
+        font-family: 'DM Mono', monospace !important;
+    }
+
+    [data-testid="stVerticalBlockBorderWrapper"] {
+        background: var(--panel);
+        border-color: var(--line) !important;
+        border-radius: 8px !important;
+    }
+
+    /* Navigation */
+    .fd-nav {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-height: 48px;
+        border-bottom: 1px solid var(--line);
+        margin-bottom: 2.2rem;
+        padding-bottom: 12px;
+    }
+
+    .fd-mark {
+        width: 30px;
+        height: 30px;
+        border-radius: 6px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--text);
+        color: var(--bg);
+        font: 700 12px 'DM Mono', monospace;
+    }
+
+    .fd-brand {
+        font-size: 16px;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+    }
+
+    .fd-navitem {
+        color: var(--muted);
+        font-size: 12px;
+        padding: 7px 10px;
+        border-radius: 5px;
+        text-decoration: none !important;
+    }
+
+    .fd-navitem.active {
+        color: var(--text) !important;
+        background: #E7DFD0;
+    }
+
+    .fd-status {
+        margin-left: auto;
+        color: var(--muted);
+        font-size: 11px;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+    }
+
+    .fd-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #A6A79F;
+        display: inline-block;
+    }
+
+    .fd-dot.ready {
+        background: #47745B;
+    }
+
+    /* Hero and section labels */
+    .fd-eyebrow, .fd-section-label {
+        color: var(--accent);
+        font: 500 10px 'DM Mono', monospace;
+        letter-spacing: 0.10em;
+        margin-bottom: 12px;
+    }
+
+    .fd-hero {
+        position: relative;
+        padding: 18px 0 30px;
+        margin-bottom: 24px;
+        border-bottom: 1px solid var(--line);
+    }
+
+    .fd-hero .fd-eyebrow {
+        margin-bottom: 22px;
+    }
+
+    .fd-hero .fd-eyebrow span {
+        color: #A9A08F;
+        padding: 0 5px;
+    }
+
+    .fd-hero .fd-title {
+        font-size: clamp(46px, 6vw, 72px);
+        max-width: 760px;
+        line-height: 0.99;
+        letter-spacing: -0.075em;
+        margin-bottom: 20px;
+    }
+
+    .fd-hero .fd-subtitle {
+        max-width: 570px;
+        font-size: 16px;
+        line-height: 1.8;
+        margin-bottom: 22px;
+    }
+
+    .fd-hero-meta {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 9px;
+        color: var(--muted);
+        font: 500 9px 'DM Mono', monospace;
+        letter-spacing: 0.08em;
+    }
+
+    .fd-meta-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #47745B;
+    }
+
+    .fd-meta-divider {
+        color: #B5AA99;
+    }
+
+    .fd-section-label {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 11px;
+        margin-bottom: 16px;
+    }
+
+    .fd-section-number {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 25px;
+        height: 25px;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        color: var(--text);
+        letter-spacing: 0;
+    }
+
+    .fd-title {
+        font-size: clamp(34px, 4vw, 48px);
+        font-weight: 700;
+        line-height: 1.08;
+        letter-spacing: -0.055em;
+        margin: 0 0 10px;
+    }
+
+    .fd-subtitle {
+        max-width: 640px;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.65;
+        margin-bottom: 24px;
+    }
+
+    .fd-lead, .fd-snippet {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.7;
+    }
+
+    .fd-card-title {
+        color: var(--text);
+        font-size: 14px;
+        font-weight: 700;
+        margin: 0 0 7px;
+    }
+
+    .fd-step {
+        color: var(--accent);
+        font: 500 11px 'DM Mono', monospace;
+        margin-bottom: 10px;
+    }
+
+    .fd-summary {
+        padding: 18px 20px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+    }
+
+    .fd-source-title {
+        font-size: 14px;
+        font-weight: 700;
+        line-height: 1.5;
+    }
+
+    .fd-domain {
+        font: 11px 'DM Mono', monospace;
+        color: var(--muted);
+        margin: 5px 0 9px;
+    }
+
+    /* Dropdowns */
+    [data-testid="stSelectbox"] [data-baseweb="select"] > div {
+        background-color: #FFFCF5 !important;
+        border: 1px solid #CFC5B5 !important;
+        color: #202723 !important;
+        box-shadow: none !important;
+    }
+
+    [data-testid="stSelectbox"] [data-baseweb="select"] input,
+    [data-testid="stSelectbox"] [data-baseweb="select"] span {
+        color: #202723 !important;
+        -webkit-text-fill-color: #202723 !important;
+    }
+
+    [data-testid="stSelectbox"] svg {
+        fill: #686D65 !important;
+        color: #686D65 !important;
+    }
+
+    [data-baseweb="popover"] ul,
+    [data-baseweb="menu"] {
+        background-color: #FFFCF5 !important;
+    }
+
+    [data-baseweb="popover"] li,
+    [data-baseweb="menu"] li {
+        background-color: #FFFCF5 !important;
+        color: #202723 !important;
+    }
+
+    [data-baseweb="popover"] li:hover,
+    [data-baseweb="menu"] li:hover {
+        background-color: #EDE7DA !important;
+        color: #202723 !important;
+    }
+
+    /* Download report button */
+    [data-testid="stDownloadButton"] button,
+    [data-testid="stDownloadButton"] button p,
+    [data-testid="stDownloadButton"] button span {
+        background: #C65D36 !important;
+        color: #FFFFFF !important;
+        -webkit-text-fill-color: #FFFFFF !important;
+        border: 1px solid #C65D36 !important;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+        opacity: 1 !important;
+    }
+
+    [data-testid="stDownloadButton"] button:hover,
+    [data-testid="stDownloadButton"] button:hover p,
+    [data-testid="stDownloadButton"] button:hover span {
+        background: #A94727 !important;
+        color: #FFFFFF !important;
+        -webkit-text-fill-color: #FFFFFF !important;
+        border-color: #A94727 !important;
+        box-shadow: 0 4px 12px rgba(198, 93, 54, 0.25) !important;
+        transform: translateY(-1px);
+    }
+
+    /* Verification checklist */
+    [data-testid="stCheckbox"] div[data-baseweb="checkbox"] > div {
+        background-color: #FFFCF5 !important;
+        border: 1.5px solid #C65D36 !important;
+        border-radius: 4px !important;
+    }
+
+    [data-testid="stCheckbox"] div[data-baseweb="checkbox"] > div[aria-checked="true"] {
+        background-color: #C65D36 !important;
+        border-color: #C65D36 !important;
+    }
+
+    [data-testid="stCheckbox"] label p {
+        color: #202723 !important;
+    }
+
+    @media (max-width: 700px) {
+        .block-container {
+            padding: 1rem 1rem 2rem;
+        }
+
+        .fd-nav {
+            margin-bottom: 1.5rem;
+        }
+
+        .fd-navitem {
+            display: none;
+        }
+
+        .fd-status {
+            font-size: 10px;
+        }
+
+        .fd-hero .fd-title {
+            font-size: 46px;
+        }
+
+        .fd-hero {
+            padding-top: 8px;
+        }
+
+        .fd-subtitle {
+            margin-bottom: 20px;
+        }
+    }
+        .fd-summary pre { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); font-size: 12px; }
     </style>
     """, unsafe_allow_html=True)
+
 
 
 def render_fallback(report):
@@ -303,62 +850,163 @@ def render_sources(results):
         )
 
 
-def render_investigation(error, technology, language, environment, context, serp_key, groq_key):
-    if not error.strip():
-        st.error("Add an error message to start the investigation.")
+def perform_investigation(error, technology, language, environment, context, serp_key, groq_key):
+    """Run the existing search and analysis pipeline and return session-ready results."""
+    with st.spinner("Searching Google for relevant troubleshooting evidence…"):
+        query, results = search_web(error.strip(), technology, language, environment, context, serp_key.strip())
+    ai_unavailable = False
+    with st.spinner("Preparing evidence-aware guidance…"):
+        try:
+            fallback, ai_text = ai_analysis(error.strip(), technology, language, environment, context, results, groq_key.strip())
+        except (requests.RequestException, KeyError, ValueError):
+            fallback, ai_text, ai_unavailable = fallback_analysis(error.strip(), technology, results), None, True
+    if fallback is None:
+        fallback = fallback_analysis(error.strip(), technology, results)
+    return {
+        "error": error.strip(), "technology": technology, "language": language,
+        "environment": environment, "context": context, "query": query,
+        "results": results, "fallback": fallback, "ai_text": ai_text,
+        "ai_unavailable": ai_unavailable,
+    }
+
+
+def render_fix_verification(investigation):
+    st.markdown("## Fix Verification Lab")
+    st.caption("Apply a suggested fix in your own environment, then share the result. FieldDebug never executes submitted code.")
+    original = investigation["error"]
+    st.markdown("#### 1 · Original error")
+    st.code(original, language="text")
+    st.caption(" · ".join(part for part in [investigation["technology"], investigation["language"], investigation["environment"], investigation["context"]] if part) or "No additional context provided")
+
+    analysis_for_fixes = investigation["ai_text"] or investigation["fallback"]
+    fix_options = suggested_fix_options(analysis_for_fixes, investigation["fallback"])
+    if not fix_options:
+        st.info("No selectable fix suggestions are available for this investigation yet.")
         return
-    if not has_serpapi_key(serp_key):
-        st.error("Web search is not configured. Add a SerpApi key in Settings to investigate.")
+
+    st.markdown("#### 2–4 · Choose, apply, and verify")
+    with st.form("fix_verification_form"):
+        selected_fix = st.selectbox("Choose one of the suggested fixes", fix_options, key="verification_selected_fix")
+        st.markdown("**3 · Apply the fix**")
+        st.info(selected_fix)
+        code_parts = re.findall(r"`([^`]+)`", selected_fix)
+        if code_parts:
+            st.code("\n".join(code_parts), language="text")
+        st.markdown("**4 · Verify the outcome**")
+        outcome = st.text_area("New terminal output, error, or test result", placeholder="Paste what happened after you tried the fix. FieldDebug will classify the evidence, not execute it.", height=105, key="verification_output")
+        user_reports_success = st.checkbox("I applied the fix and can confirm the original issue is resolved", key="verification_user_success")
+        new_error = st.text_area("New error to investigate", placeholder="Paste the new error or failure output", height=72, key="verification_new_error")
+        button_col, next_col = st.columns(2)
+        with button_col:
+            save_verification = st.form_submit_button("Compare results", type="primary", use_container_width=True)
+        with next_col:
+            investigate_again = st.form_submit_button("Investigate a new error", use_container_width=True)
+
+    if save_verification or investigate_again:
+        status, reason = classify_verification(outcome, user_reports_success)
+        entry = add_verification_history(st.session_state, original, selected_fix, outcome, status, reason)
+        st.session_state["fielddebug_latest_verification"] = entry
+    if investigate_again:
+        try:
+            request = next_investigation_payload(investigation, new_error.strip() or outcome.strip())
+            serp_key = st.session_state.get("serpapi_api_key", os.getenv("SERPAPI_API_KEY", ""))
+            groq_key = st.session_state.get("groq_api_key", os.getenv("GROQ_API_KEY", ""))
+            if not has_serpapi_key(serp_key):
+                st.warning("For a follow-up search, make sure the SerpApi key is available in Settings.")
+                return
+            next_result = perform_investigation(
+                request["error"], request["technology"], request["language"],
+                request["environment"], request["context"],
+                serp_key, groq_key,
+            )
+            st.session_state["fielddebug_current_investigation"] = next_result
+            add_investigation_history(st.session_state, next_result)
+            st.session_state.pop("fielddebug_latest_verification", None)
+            st.session_state["_reset_verification_widgets"] = True
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
+        except requests.RequestException:
+            st.error("The follow-up search could not reach SerpApi. Check connectivity and try again.")
+        except (KeyError, RuntimeError, ValueError):
+            st.error("The follow-up search response could not be processed.")
+
+    latest = st.session_state.get("fielddebug_latest_verification")
+    if latest and latest["original_error"] == original:
+        render_verification_comparison(latest)
+
+
+def render_verification_comparison(entry):
+    status_colors = {"Resolved": "#51d6a0", "Still failing": "#ff8a8a", "Needs review": "#f0c36b"}
+    color = status_colors.get(entry["status"], "#aab1c0")
+    st.markdown("### Before and after")
+    st.markdown(
+        f'<div class="fd-summary"><div style="color:{color};font-weight:700;margin-bottom:14px">● {html.escape(entry["status"])}</div>'
+        f'<div class="fd-section-label">ORIGINAL ERROR</div><pre>{html.escape(entry["original_error"])}</pre>'
+        f'<div class="fd-section-label">SELECTED FIX</div><pre>{html.escape(entry["selected_fix"])}</pre>'
+        f'<div class="fd-section-label">NEW OUTPUT</div><pre>{html.escape(entry["output"] or "No output supplied")}</pre>'
+        f'<div class="fd-lead">{html.escape(entry["reason"])}</div></div>', unsafe_allow_html=True,
+    )
+    if entry["status"] == "Still failing":
+        st.info("Next: paste the new error above and choose Investigate a new error to search for updated evidence.")
+    elif entry["status"] == "Needs review":
+        st.info("Next: provide clearer output or run a relevant test before treating the fix as resolved.")
+
+
+def render_investigation(investigation):
+    error = investigation["error"]
+    results = investigation["results"]
+    ai_text = investigation["ai_text"]
+    fallback = investigation["fallback"]
+    st.markdown('<div class="fd-section-label">Investigation report</div>', unsafe_allow_html=True)
+    st.markdown('<h2 style="font-size:25px;margin:0 0 12px">Evidence for your error</h2>', unsafe_allow_html=True)
+    st.markdown(f'<div class="fd-summary"><div class="fd-section-label">SEARCH COMPLETE · {len(results)} RESULTS</div><div class="fd-lead">{html.escape(error[:420])}</div></div>', unsafe_allow_html=True)
+    with st.expander("View search query"):
+        st.code(investigation["query"])
+    if investigation["ai_unavailable"]:
+        st.warning("Groq analysis is unavailable right now. Search succeeded; showing rule-based hypotheses.")
+    elif not ai_text:
+        st.caption("Groq is not configured. Guidance below is rule-based and does not confirm a root cause.")
+
+    st.markdown("### Analysis")
+    if ai_text:
+        st.markdown('<div class="fd-section-label">AI-GENERATED ANALYSIS · REVIEW AGAINST SOURCES</div>', unsafe_allow_html=True)
+        st.markdown(ai_text)
+    else:
+        render_fallback(fallback)
+    st.markdown("### Web evidence")
+    render_sources(results)
+    report = make_report(error, investigation["technology"], investigation["language"],
+                         investigation["environment"], investigation["context"], investigation["query"],
+                         results, ai_text or fallback, is_ai=bool(ai_text))
+    st.download_button("Download investigation report", data=report, file_name="fielddebug_report.txt", mime="text/plain")
+    st.divider()
+    render_fix_verification(investigation)
+
+
+def render_session_history():
+    history = st.session_state.get("fielddebug_history", [])
+    if not history:
         return
-    try:
-        with st.spinner("Searching Google for relevant troubleshooting evidence…"):
-            query, results = search_web(error.strip(), technology, language, environment, context, serp_key.strip())
-        with st.spinner("Preparing evidence-aware guidance…"):
-            try:
-                fallback, ai_text = ai_analysis(error.strip(), technology, language, environment, context, results, groq_key.strip())
-                ai_unavailable = False
-            except (requests.RequestException, KeyError, ValueError):
-                fallback, ai_text, ai_unavailable = fallback_analysis(error.strip(), technology, results), None, True
-
-        st.markdown('<div class="fd-section-label">Investigation report</div>', unsafe_allow_html=True)
-        st.markdown('<h2 style="font-size:25px;margin:0 0 12px">Evidence for your error</h2>', unsafe_allow_html=True)
-        st.markdown(f'<div class="fd-summary"><div class="fd-section-label">SEARCH COMPLETE · {len(results)} RESULTS</div><div class="fd-lead">{html.escape(error.strip()[:420])}</div></div>', unsafe_allow_html=True)
-        with st.expander("View search query"):
-            st.code(query)
-        if ai_unavailable:
-            st.warning("Groq analysis is unavailable right now. Search succeeded; showing rule-based hypotheses.")
-        elif not groq_key.strip():
-            st.caption("Groq is not configured. Guidance below is rule-based and does not confirm a root cause.")
-
-        st.markdown("### Analysis")
-        if ai_text:
-            st.markdown('<div class="fd-section-label">AI-GENERATED ANALYSIS · REVIEW AGAINST SOURCES</div>', unsafe_allow_html=True)
-            st.markdown(ai_text)
-        else:
-            render_fallback(fallback)
-
-        st.markdown("### Web evidence")
-        render_sources(results)
-        report = make_report(error.strip(), technology, language, environment, context, query, results, ai_text or fallback, is_ai=bool(ai_text))
-        st.download_button("Download investigation report", data=report, file_name="fielddebug_report.txt", mime="text/plain")
-    except requests.HTTPError as exc:
-        code = exc.response.status_code if exc.response is not None else "unknown"
-        st.error(f"Search failed with HTTP {code}. Check the SerpApi key, quota, and account status.")
-    except requests.RequestException:
-        st.error("The search request could not reach SerpApi. Check your network and try again.")
-    except (KeyError, ValueError, RuntimeError):
-        st.error("The search response could not be processed. Check the API key and try again.")
-    except Exception:
-        st.error("An unexpected error occurred. Check configuration and try again.")
+    st.markdown("### Session history")
+    labels = [f'{item["timestamp"]} · {item["status"]} · {item["original_error"][:70]}' for item in history]
+    selected_index = st.selectbox("Revisit a verification attempt", range(len(history)),
+                                  format_func=lambda index: labels[index], key="history_selection")
+    render_verification_comparison(history[selected_index])
+    if st.button("Clear session history", key="clear_history"):
+        clear_verification_history(st.session_state)
+        st.rerun()
 
 
 def main():
+    if st.session_state.pop("_reset_verification_widgets", False):
+        clear_verification_widget_state(st.session_state)
     inject_styles()
     with st.sidebar:
         st.markdown("### Settings")
         st.caption("Provider credentials are stored only in this session or your local environment.")
-        serp_key = st.text_input("SerpApi API key", value=os.getenv("SERPAPI_API_KEY", ""), type="password", help="Required for live Google Search.")
-        groq_key = st.text_input("Groq API key · optional", value=os.getenv("GROQ_API_KEY", ""), type="password", help="Enables evidence-aware AI analysis.")
+        serp_key = st.text_input("SerpApi API key", value=os.getenv("SERPAPI_API_KEY", ""), type="password", help="Required for live Google Search.", key="serpapi_api_key")
+        groq_key = st.text_input("Groq API key · optional", value=os.getenv("GROQ_API_KEY", ""), type="password", help="Enables evidence-aware AI analysis.", key="groq_api_key")
         st.caption("Without Groq, FieldDebug uses rule-based troubleshooting guidance.")
 
     ready = has_serpapi_key(serp_key)
@@ -371,7 +1019,7 @@ def main():
         unsafe_allow_html=True,
     )
     st.markdown('<div id="investigate"></div><div class="fd-eyebrow">AI-ASSISTED DEBUGGING WORKSPACE</div>', unsafe_allow_html=True)
-    st.markdown('<h1 class="fd-title">Every error has a trail.</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="fd-title">Let’s trace the failure.</h1>', unsafe_allow_html=True)
     st.markdown('<div class="fd-subtitle">Investigate errors with real-world evidence, actionable fixes, and verification steps.</div>', unsafe_allow_html=True)
     st.markdown('<div class="fd-section-label">Start an investigation</div>', unsafe_allow_html=True)
 
@@ -391,7 +1039,32 @@ def main():
         submitted = st.form_submit_button("⌕  Investigate error", type="primary", use_container_width=True)
 
     if submitted:
-        render_investigation(error, technology, language, environment, context, serp_key, groq_key)
+        if not error.strip():
+            st.error("Add an error message to start the investigation.")
+        elif not has_serpapi_key(serp_key):
+            st.error("Web search is not configured. Add a SerpApi key in Settings to investigate.")
+        else:
+            try:
+                result = perform_investigation(error, technology, language, environment, context, serp_key, groq_key)
+                st.session_state["fielddebug_current_investigation"] = result
+                add_investigation_history(st.session_state, result)
+                st.session_state.pop("fielddebug_latest_verification", None)
+                st.session_state["_reset_verification_widgets"] = True
+            except requests.HTTPError as exc:
+                code = exc.response.status_code if exc.response is not None else "unknown"
+                st.error(f"Search failed with HTTP {code}. Check the SerpApi key, quota, and account status.")
+            except requests.RequestException:
+                st.error("The search request could not reach SerpApi. Check your network and try again.")
+            except (KeyError, ValueError, RuntimeError):
+                st.error("The search response could not be processed. Check the API key and try again.")
+            except Exception:
+                st.error("An unexpected error occurred. Check configuration and try again.")
+
+    current_investigation = st.session_state.get("fielddebug_current_investigation")
+    if current_investigation:
+        st.divider()
+        render_investigation(current_investigation)
+    render_session_history()
 
     st.markdown('<div id="about"></div>', unsafe_allow_html=True)
     st.markdown("---")
