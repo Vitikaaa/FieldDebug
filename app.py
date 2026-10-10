@@ -1,4 +1,6 @@
 ﻿import os
+import html
+from urllib.parse import urlparse
 import requests
 import streamlit as st
 from dotenv import load_dotenv
@@ -243,185 +245,168 @@ def make_report(error, technology, language, environment, context, query, result
             "Disclaimer: Suggested fixes are hypotheses and must be verified in your environment.")
 
 
+def inject_styles():
+    st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&display=swap');
+    :root{--bg:#0b0d12;--panel:#11141b;--line:#252a36;--text:#edf0f6;--muted:#9299aa;--blue:#7892ff}
+    html,body,[class*="css"]{font-family:'DM Sans',sans-serif}.stApp{background:radial-gradient(ellipse at 50% -25%,#19223a 0%,#0b0d12 44%);color:var(--text)}
+    [data-testid="stHeader"]{background:transparent}.block-container{max-width:1080px;padding:1.2rem 2rem 4rem}
+    [data-testid="stSidebar"]{background:#0d1016;border-right:1px solid var(--line)}[data-testid="stSidebar"]>div:first-child{padding-top:1.5rem}
+    h1,h2,h3,p{color:var(--text)}h1{letter-spacing:-.055em}h2{letter-spacing:-.035em}label,[data-testid="stCaptionContainer"]{color:var(--muted)!important}
+    [data-testid="stTextArea"] textarea,[data-testid="stTextInput"] input,[data-testid="stSelectbox"] [data-baseweb="select"]>div{background:#0c0f15!important;border:1px solid #2a3040!important;border-radius:9px!important;color:#edf0f6!important}
+    [data-testid="stTextArea"] textarea:focus,[data-testid="stTextInput"] input:focus{border-color:#718dff!important;box-shadow:0 0 0 1px #718dff55!important}
+    [data-testid="stForm"]{border:0;padding:0}.stButton>button,[data-testid="stFormSubmitButton"] button{min-height:42px;border-radius:9px;border:1px solid #7894ff;background:#6b88f5;color:#08101f;font-weight:700;transition:filter .15s,transform .15s}
+    .stButton>button:hover,[data-testid="stFormSubmitButton"] button:hover{filter:brightness(1.08);transform:translateY(-1px)}a{color:#9ab0ff!important}
+    [data-testid="stVerticalBlockBorderWrapper"]{background:#11141b;border-color:#282e3a!important;border-radius:12px!important}code,pre{font-family:'DM Mono',monospace!important}
+    .fd-nav{display:flex;align-items:center;gap:12px;min-height:48px;border-bottom:1px solid #282e3a;margin-bottom:3.8rem;padding-bottom:12px}
+    .fd-mark{width:28px;height:28px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;background:#6f8cff;color:#080d18;font:700 12px 'DM Mono',monospace}
+    .fd-brand{font-size:15px;font-weight:700;letter-spacing:-.03em}.fd-navitem{color:#a2a9b8;font-size:12px;padding:7px 10px;border-radius:7px;text-decoration:none!important}.fd-navitem.active{color:#edf0f6!important;background:#1a1f2a}
+    .fd-status{margin-left:auto;color:#9ca5b7;font-size:11px;display:flex;align-items:center;gap:7px}.fd-dot{width:7px;height:7px;border-radius:50%;background:#555c6c;display:inline-block}.fd-dot.ready{background:#53d6a0;box-shadow:0 0 10px #53d6a055}
+    .fd-eyebrow,.fd-section-label{color:#8da4ff;font:500 10px 'DM Mono',monospace;letter-spacing:.13em;margin-bottom:12px}.fd-title{font-size:clamp(36px,5vw,54px);font-weight:600;line-height:1.04;letter-spacing:-.065em;margin:0 0 12px}
+    .fd-subtitle{max-width:610px;color:#a1a8b7;font-size:15px;line-height:1.65;margin-bottom:34px}.fd-lead,.fd-snippet{color:#b2b8c5;font-size:13px;line-height:1.65}.fd-card-title{color:#e9edf5;font-size:14px;font-weight:600;margin:0 0 7px}.fd-step{color:#7893ff;font:500 11px 'DM Mono',monospace;margin-bottom:14px}
+    .fd-summary{padding:18px 20px;border:1px solid #293247;border-radius:12px;background:linear-gradient(120deg,#141a27,#11141b)}.fd-source-title{font-size:14px;font-weight:600;line-height:1.4}.fd-domain{font:11px 'DM Mono',monospace;color:#8e98ad;margin:5px 0 9px}
+    @media(max-width:700px){.block-container{padding:1rem 1rem 3rem}.fd-nav{margin-bottom:2.5rem}.fd-navitem{display:none}.fd-status{font-size:10px}.fd-subtitle{margin-bottom:25px}}
+    </style>
+    """, unsafe_allow_html=True)
+
+
 def render_fallback(report):
-    st.markdown("### Initial assessment")
-    st.write(report["summary"])
-
-    st.markdown("### Possible causes")
+    st.markdown('<div class="fd-section-label">Initial assessment · Rule-based hypotheses</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="fd-summary">{html.escape(report["summary"])}</div>', unsafe_allow_html=True)
+    st.markdown("#### Possible causes")
     for cause in report["causes"]:
-        st.write(f"- {cause}")
-
-    st.markdown("### Suggested fixes")
+        st.markdown(f"- {cause}")
+    st.markdown("#### Recommended fixes")
     for index, fix in enumerate(report["fixes"], start=1):
-        st.write(f"{index}. {fix}")
+        st.markdown(f"**{index:02d}** &nbsp; {fix}")
+    st.markdown("#### Verification checklist")
+    for index, step in enumerate(report["verification"]):
+        st.checkbox(step, key=f"verify_{index}_{abs(hash(step))}")
 
-    st.markdown("### How to verify")
-    for step in report["verification"]:
-        st.checkbox(step, key="verify_" + str(abs(hash(step))))
+
+def render_sources(results):
+    if not results:
+        st.info("No organic results came back for this query. Try a shorter error excerpt or add the exact exception name.")
+        return
+    st.markdown(f'<div class="fd-section-label">Retrieved evidence · {len(results)} sources</div>', unsafe_allow_html=True)
+    for index, item in enumerate(results, 1):
+        domain = html.escape(urlparse(item["link"]).netloc)
+        title, snippet = html.escape(item["title"]), html.escape(item["snippet"])
+        link = html.escape(item["link"], quote=True)
+        st.markdown(
+            f'<div class="fd-summary" style="margin:10px 0;padding:16px 18px">'
+            f'<div class="fd-section-label">SOURCE {index:02d} &nbsp; · &nbsp; {domain}</div>'
+            f'<div class="fd-source-title"><a href="{link}" target="_blank" rel="noopener">{title} ↗</a></div>'
+            f'<div class="fd-snippet" style="margin-top:8px">{snippet}</div></div>',
+            unsafe_allow_html=True,
+        )
+
+
+def render_investigation(error, technology, language, environment, context, serp_key, groq_key):
+    if not error.strip():
+        st.error("Add an error message to start the investigation.")
+        return
+    if not has_serpapi_key(serp_key):
+        st.error("Web search is not configured. Add a SerpApi key in Settings to investigate.")
+        return
+    try:
+        with st.spinner("Searching Google for relevant troubleshooting evidence…"):
+            query, results = search_web(error.strip(), technology, language, environment, context, serp_key.strip())
+        with st.spinner("Preparing evidence-aware guidance…"):
+            try:
+                fallback, ai_text = ai_analysis(error.strip(), technology, language, environment, context, results, groq_key.strip())
+                ai_unavailable = False
+            except (requests.RequestException, KeyError, ValueError):
+                fallback, ai_text, ai_unavailable = fallback_analysis(error.strip(), technology, results), None, True
+
+        st.markdown('<div class="fd-section-label">Investigation report</div>', unsafe_allow_html=True)
+        st.markdown('<h2 style="font-size:25px;margin:0 0 12px">Evidence for your error</h2>', unsafe_allow_html=True)
+        st.markdown(f'<div class="fd-summary"><div class="fd-section-label">SEARCH COMPLETE · {len(results)} RESULTS</div><div class="fd-lead">{html.escape(error.strip()[:420])}</div></div>', unsafe_allow_html=True)
+        with st.expander("View search query"):
+            st.code(query)
+        if ai_unavailable:
+            st.warning("Groq analysis is unavailable right now. Search succeeded; showing rule-based hypotheses.")
+        elif not groq_key.strip():
+            st.caption("Groq is not configured. Guidance below is rule-based and does not confirm a root cause.")
+
+        st.markdown("### Analysis")
+        if ai_text:
+            st.markdown('<div class="fd-section-label">AI-GENERATED ANALYSIS · REVIEW AGAINST SOURCES</div>', unsafe_allow_html=True)
+            st.markdown(ai_text)
+        else:
+            render_fallback(fallback)
+
+        st.markdown("### Web evidence")
+        render_sources(results)
+        report = make_report(error.strip(), technology, language, environment, context, query, results, ai_text or fallback, is_ai=bool(ai_text))
+        st.download_button("Download investigation report", data=report, file_name="fielddebug_report.txt", mime="text/plain")
+    except requests.HTTPError as exc:
+        code = exc.response.status_code if exc.response is not None else "unknown"
+        st.error(f"Search failed with HTTP {code}. Check the SerpApi key, quota, and account status.")
+    except requests.RequestException:
+        st.error("The search request could not reach SerpApi. Check your network and try again.")
+    except (KeyError, ValueError, RuntimeError):
+        st.error("The search response could not be processed. Check the API key and try again.")
+    except Exception:
+        st.error("An unexpected error occurred. Check configuration and try again.")
 
 
 def main():
-    st.title("🐛 FieldDebug")
-    st.subheader("Know what might be broken. Find evidence. Test the fix.")
-    st.write(
-        "A debugging research assistant that searches the web for relevant "
-        "troubleshooting evidence and helps you test possible solutions."
-    )
-
+    inject_styles()
     with st.sidebar:
-        st.header("Configuration")
-        serp_key = st.text_input(
-            "SerpApi API key",
-            value=os.getenv("SERPAPI_API_KEY", ""),
-            type="password",
-            help="Get a key from your SerpApi account. Never share it publicly.",
-        )
-        groq_key = st.text_input(
-            "Groq API key (optional)",
-            value=os.getenv("GROQ_API_KEY", ""),
-            type="password",
-            help="Optional: enables AI-generated evidence summaries.",
-        )
-        st.caption(
-            "Without a Groq key, FieldDebug uses rule-based troubleshooting hints. "
-            "Web search requires a SerpApi key."
-        )
-        st.divider()
-        st.caption("Prototype: suggestions are hypotheses, not guaranteed diagnoses.")
+        st.markdown("### Settings")
+        st.caption("Provider credentials are stored only in this session or your local environment.")
+        serp_key = st.text_input("SerpApi API key", value=os.getenv("SERPAPI_API_KEY", ""), type="password", help="Required for live Google Search.")
+        groq_key = st.text_input("Groq API key · optional", value=os.getenv("GROQ_API_KEY", ""), type="password", help="Enables evidence-aware AI analysis.")
+        st.caption("Without Groq, FieldDebug uses rule-based troubleshooting guidance.")
+
+    ready = has_serpapi_key(serp_key)
+    repo_url = os.getenv("FIELDEBUG_GITHUB_URL", "").strip()
+    github_link = f'<a class="fd-navitem" href="{html.escape(repo_url, quote=True)}" target="_blank" rel="noopener">GitHub ↗</a>' if repo_url.startswith("https://github.com/") else ""
+    st.markdown(
+        '<div class="fd-nav"><span class="fd-mark">fd</span><span class="fd-brand">FieldDebug</span>'
+        '<a class="fd-navitem active" href="#investigate">Investigate</a><a class="fd-navitem" href="#about">About</a>'
+        f'{github_link}<span class="fd-status"><i class="fd-dot {"ready" if ready else ""}"></i>Search {"ready" if ready else "not configured"}</span></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown('<div id="investigate"></div><div class="fd-eyebrow">AI-ASSISTED DEBUGGING WORKSPACE</div>', unsafe_allow_html=True)
+    st.markdown('<h1 class="fd-title">Every error has a trail.</h1>', unsafe_allow_html=True)
+    st.markdown('<div class="fd-subtitle">Investigate errors with real-world evidence, actionable fixes, and verification steps.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="fd-section-label">Start an investigation</div>', unsafe_allow_html=True)
 
     with st.form("debug_form"):
-        error = st.text_area(
-            "Paste the error message",
-            placeholder="Example: ModuleNotFoundError: No module named 'pandas'",
-            height=130,
-        )
-        col1, col2 = st.columns(2)
-        with col1:
-            technology = st.selectbox(
-                "Technology / framework",
-                [
-                    "Python",
-                    "Java",
-                    "JavaScript",
-                    "React",
-                    "Node.js",
-                    "FastAPI",
-                    "SQL / Database",
-                    "AWS / Cloud",
-                    "Other",
-                ],
-            )
-            language = st.selectbox(
-                "Programming language",
-                ["Python", "Java", "JavaScript", "TypeScript", "SQL", "Other"],
-            )
-        with col2:
-            environment = st.text_input(
-                "Environment (optional)",
-                placeholder="e.g. Windows 11, Python 3.13, VS Code",
-            )
-            context = st.text_input(
-                "What were you trying to do? (optional)",
-                placeholder="e.g. Install dependencies in a virtual environment",
-            )
-        submitted = st.form_submit_button(
-            "🔎 Investigate error",
-            type="primary",
-            use_container_width=True,
-        )
+        error = st.text_area("Error message or traceback", placeholder="Paste the exact error. Example: ModuleNotFoundError: No module named 'pandas'", height=112)
+        first, second = st.columns(2, gap="medium")
+        with first:
+            technology = st.selectbox("Technology / framework", ["Python", "Java", "JavaScript", "React", "Node.js", "FastAPI", "SQL / Database", "AWS / Cloud", "Other"])
+        with second:
+            language = st.selectbox("Programming language", ["Python", "Java", "JavaScript", "TypeScript", "SQL", "Other"])
+        with st.expander("Environment and what you were trying to do · optional"):
+            env_col, context_col = st.columns(2, gap="medium")
+            with env_col:
+                environment = st.text_input("Environment", placeholder="Windows 11 · Python 3.13 · VS Code")
+            with context_col:
+                context = st.text_input("Intended action", placeholder="Installing a package in a virtual environment")
+        submitted = st.form_submit_button("⌕  Investigate error", type="primary", use_container_width=True)
 
     if submitted:
-        if not error.strip():
-            st.warning("Please paste the error message first.")
-            return
-        if not has_serpapi_key(serp_key):
-            st.error("Add your SerpApi key in the sidebar to run a live search.")
-            st.info("You can get a key from https://serpapi.com/")
-            return
+        render_investigation(error, technology, language, environment, context, serp_key, groq_key)
 
-        try:
-            with st.spinner("Searching the web for relevant troubleshooting evidence..."):
-                query, results = search_web(
-                    error.strip(),
-                    technology,
-                    language,
-                    environment,
-                    context,
-                    serp_key.strip(),
-                )
-
-            st.session_state["fielddebug_query"] = query
-            st.session_state["fielddebug_results"] = results
-            st.session_state["fielddebug_error"] = error.strip()
-
-            st.success(f"Search complete — found {len(results)} organic results.")
-            with st.expander("See the exact search query"):
-                st.code(query)
-
-            if not results:
-                st.warning(
-                    "No organic results were returned. Try a shorter error message "
-                    "or include the exact exception name."
-                )
-
-            with st.spinner("Preparing troubleshooting guidance..."):
-                try:
-                    fallback, ai_text = ai_analysis(
-                        error.strip(), technology, language, environment, context,
-                        results, groq_key.strip(),
-                    )
-                except (requests.RequestException, KeyError, ValueError):
-                    fallback, ai_text = fallback_analysis(error.strip(), technology, results), None
-                    st.warning("Groq analysis was unavailable. Showing rule-based hypotheses instead.")
-
-            st.divider()
-            st.header("Investigation report")
-            if ai_text:
-                st.markdown(ai_text)
-                st.caption("AI-generated analysis. Verify each suggestion against the sources.")
-            else:
-                render_fallback(fallback)
-                st.caption("Rule-based guidance. Add a Groq key for an AI evidence summary.")
-
-            st.divider()
-            st.header("Evidence from the web")
-            if results:
-                for index, item in enumerate(results, start=1):
-                    with st.container(border=True):
-                        st.markdown(f"**{index}. [{item['title']}]({item['link']})**")
-                        st.write(item["snippet"])
-                        st.caption("Open the source to verify whether it matches your environment.")
-            else:
-                st.write("No sources to display.")
-
-            report_content = make_report(
-                error.strip(), technology, language, environment, context, query,
-                results, ai_text or fallback, is_ai=bool(ai_text),
-            )
-            st.download_button(
-                "Download investigation report",
-                data=report_content,
-                file_name="fielddebug_report.txt",
-                mime="text/plain",
-            )
-
-        except requests.HTTPError as exc:
-            code = exc.response.status_code if exc.response is not None else "unknown"
-            st.error(f"Search request failed with HTTP {code}. Check the SerpApi key, quota, and account status.")
-        except requests.RequestException:
-            st.error("Network request failed. Check connectivity and try again.")
-        except (KeyError, ValueError, RuntimeError):
-            st.error("The search response could not be processed. Check the API key and try again.")
-        except Exception:
-            st.error("An unexpected error occurred. Check configuration and try again.")
-
-    else:
-        st.divider()
-        st.markdown("### What FieldDebug does")
-        col1, col2, col3 = st.columns(3)
-        col1.markdown("**1. Search**\n\nFind current web pages related to the error.")
-        col2.markdown("**2. Investigate**\n\nGenerate cautious troubleshooting hypotheses.")
-        col3.markdown("**3. Verify**\n\nRead the sources and test one fix at a time.")
+    st.markdown('<div id="about"></div>', unsafe_allow_html=True)
+    st.markdown("---")
+    st.markdown('<div class="fd-section-label">A clearer path from error to resolution</div>', unsafe_allow_html=True)
+    st.markdown("## From error to evidence")
+    cards = st.columns(3, gap="medium")
+    items = [
+        ("01 · SEARCH", "Real search results", "FieldDebug sends the error and environment to Google through SerpApi, then returns current pages with source links."),
+        ("02 · INVESTIGATE", "Evidence, then hypotheses", "Optional AI analysis uses retrieved snippets. Without Groq, careful rule-based checks keep the workflow useful."),
+        ("03 · VERIFY", "Verify before you ship", "Read the sources, test one suggested change at a time, and use the checklist to confirm the result."),
+    ]
+    for column, (step, title, description) in zip(cards, items):
+        with column:
+            st.markdown(f'<div class="fd-step">{step}</div><div class="fd-card-title">{title}</div><p class="fd-snippet">{description}</p>', unsafe_allow_html=True)
+    st.caption("Suggested fixes are hypotheses, not confirmed diagnoses. Avoid pasting secrets or confidential code.")
 
 
 if __name__ == "__main__":
