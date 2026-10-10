@@ -245,11 +245,15 @@ def make_report(error, technology, language, environment, context, query, result
             "Disclaimer: Suggested fixes are hypotheses and must be verified in your environment.")
 
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> 5b707d2c80efdb779f9313e47edb97ef919a893e
 def inject_styles():
     st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&display=swap');
+<<<<<<< HEAD
 
     :root {
         --bg: #F5F1E8;
@@ -822,11 +826,34 @@ label,
 }
 
 
+=======
+    :root{--bg:#0b0d12;--panel:#11141b;--line:#252a36;--text:#edf0f6;--muted:#9299aa;--blue:#7892ff}
+    html,body,[class*="css"]{font-family:'DM Sans',sans-serif}.stApp{background:radial-gradient(ellipse at 50% -25%,#19223a 0%,#0b0d12 44%);color:var(--text)}
+    [data-testid="stHeader"]{background:transparent}.block-container{max-width:1080px;padding:1.2rem 2rem 4rem}
+    [data-testid="stSidebar"]{background:#0d1016;border-right:1px solid var(--line)}[data-testid="stSidebar"]>div:first-child{padding-top:1.5rem}
+    h1,h2,h3,p{color:var(--text)}h1{letter-spacing:-.055em}h2{letter-spacing:-.035em}label,[data-testid="stCaptionContainer"]{color:var(--muted)!important}
+    [data-testid="stTextArea"] textarea,[data-testid="stTextInput"] input,[data-testid="stSelectbox"] [data-baseweb="select"]>div{background:#0c0f15!important;border:1px solid #2a3040!important;border-radius:9px!important;color:#edf0f6!important}
+    [data-testid="stTextArea"] textarea:focus,[data-testid="stTextInput"] input:focus{border-color:#718dff!important;box-shadow:0 0 0 1px #718dff55!important}
+    [data-testid="stForm"]{border:0;padding:0}.stButton>button,[data-testid="stFormSubmitButton"] button{min-height:42px;border-radius:9px;border:1px solid #7894ff;background:#6b88f5;color:#08101f;font-weight:700;transition:filter .15s,transform .15s}
+    .stButton>button:hover,[data-testid="stFormSubmitButton"] button:hover{filter:brightness(1.08);transform:translateY(-1px)}a{color:#9ab0ff!important}
+    [data-testid="stVerticalBlockBorderWrapper"]{background:#11141b;border-color:#282e3a!important;border-radius:12px!important}code,pre{font-family:'DM Mono',monospace!important}
+    .fd-nav{display:flex;align-items:center;gap:12px;min-height:48px;border-bottom:1px solid #282e3a;margin-bottom:3.8rem;padding-bottom:12px}
+    .fd-mark{width:28px;height:28px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;background:#6f8cff;color:#080d18;font:700 12px 'DM Mono',monospace}
+    .fd-brand{font-size:15px;font-weight:700;letter-spacing:-.03em}.fd-navitem{color:#a2a9b8;font-size:12px;padding:7px 10px;border-radius:7px;text-decoration:none!important}.fd-navitem.active{color:#edf0f6!important;background:#1a1f2a}
+    .fd-status{margin-left:auto;color:#9ca5b7;font-size:11px;display:flex;align-items:center;gap:7px}.fd-dot{width:7px;height:7px;border-radius:50%;background:#555c6c;display:inline-block}.fd-dot.ready{background:#53d6a0;box-shadow:0 0 10px #53d6a055}
+    .fd-eyebrow,.fd-section-label{color:#8da4ff;font:500 10px 'DM Mono',monospace;letter-spacing:.13em;margin-bottom:12px}.fd-title{font-size:clamp(36px,5vw,54px);font-weight:600;line-height:1.04;letter-spacing:-.065em;margin:0 0 12px}
+    .fd-subtitle{max-width:610px;color:#a1a8b7;font-size:15px;line-height:1.65;margin-bottom:34px}.fd-lead,.fd-snippet{color:#b2b8c5;font-size:13px;line-height:1.65}.fd-card-title{color:#e9edf5;font-size:14px;font-weight:600;margin:0 0 7px}.fd-step{color:#7893ff;font:500 11px 'DM Mono',monospace;margin-bottom:14px}
+    .fd-summary{padding:18px 20px;border:1px solid #293247;border-radius:12px;background:linear-gradient(120deg,#141a27,#11141b)}.fd-source-title{font-size:14px;font-weight:600;line-height:1.4}.fd-domain{font:11px 'DM Mono',monospace;color:#8e98ad;margin:5px 0 9px}
+    @media(max-width:700px){.block-container{padding:1rem 1rem 3rem}.fd-nav{margin-bottom:2.5rem}.fd-navitem{display:none}.fd-status{font-size:10px}.fd-subtitle{margin-bottom:25px}}
+>>>>>>> 5b707d2c80efdb779f9313e47edb97ef919a893e
     </style>
     """, unsafe_allow_html=True)
 
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> 5b707d2c80efdb779f9313e47edb97ef919a893e
 def render_fallback(report):
     st.markdown('<div class="fd-section-label">Initial assessment · Rule-based hypotheses</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="fd-summary">{html.escape(report["summary"])}</div>', unsafe_allow_html=True)
@@ -926,6 +953,7 @@ def main():
         f'{github_link}<span class="fd-status"><i class="fd-dot {"ready" if ready else ""}"></i>Search {"ready" if ready else "not configured"}</span></div>',
         unsafe_allow_html=True,
     )
+
 
 
     st.markdown('<div id="investigate"></div>', unsafe_allow_html=True)
@@ -1048,7 +1076,6 @@ def main():
         "Suggested fixes are hypotheses, not confirmed diagnoses. "
         "Avoid pasting secrets or confidential code."
     )
-
 
 
 if __name__ == "__main__":
